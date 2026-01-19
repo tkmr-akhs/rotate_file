@@ -11,8 +11,9 @@ set -uo pipefail
 ########################################
 # ドキュメント / ヘルプテキスト
 ########################################
+SCRIPT_NAME="$(basename "$0")"
 read -r -d '' HELP_TEXT <<'EOF'
-Usage: $(basename "$0") -s SRC_DIR -d DEST_DIR [-t THRESHOLD|-m MTIME] [options]
+Usage: {{SCRIPT_NAME}} -s SRC_DIR -d DEST_DIR [-t THRESHOLD|-m MTIME] [options]
 
 概要:
   SRC_DIR にあるファイルのうち、以下の条件のいずれかを満たすものを
@@ -76,7 +77,7 @@ syntax_error() {
 
 usage() {
   # ヘルプは stdout にのみ出力
-  printf '%s\n' "$HELP_TEXT"
+  printf '%s\n' "${HELP_TEXT//\{\{SCRIPT_NAME\}\}/$SCRIPT_NAME}"
 }
 
 ########################################
