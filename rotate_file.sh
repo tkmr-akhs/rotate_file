@@ -13,29 +13,26 @@ set -uo pipefail
 ########################################
 SCRIPT_NAME="$(basename "$0")"
 read -r -d '' HELP_TEXT <<'EOF'
-Usage: {{SCRIPT_NAME}} -s SRC_DIR -d DEST_DIR [-t THRESHOLD|-m MTIME] [options]
+Usage: {{SCRIPT_NAME}} -s SRC_DIR -d DEST_DIR [-b BYTES|-p PERCENT|-m MTIME] [options]
 
 概要:
   SRC_DIR にあるファイルのうち、以下の条件のいずれかを満たすものを
   最終更新日時が古い順に DEST_DIR へ移動します。
 
     (1) 最終更新日時 < -m で指定した閾値
-    (2) 空き容量    < -t で指定した閾値
-
-前提:
-  - ファイルは mtime 昇順に処理されます。
-  - このスクリプト以外の処理では空き容量が変化しないものとみなします。
-  - GNU 版 date/df/find を前提とした Linux 環境用です。
+    (2) 空き容量    < -b/-p で指定した閾値
 
 必須:
   -s SRC_DIR       対象ディレクトリ
   -d DEST_DIR      移動先ディレクトリ
-  少なくとも以下のどちらかを指定してください:
-    -t THRESHOLD   空き容量閾値
-                   例: 20%        (総サイズの20%をバイト換算)
-                       5368709120 (空き容量がこのBytes未満なら条件成立)
+  少なくとも以下のどれかを指定してください:
+    -b BYTES       空き容量閾値 (Bytes)
+                   例: 5368709120 (空き容量がこのBytes未満なら条件成立)
+    -p PERCENT     空き容量閾値 (総サイズに対する割合)
+                   例: 20 (総サイズの20%をバイト換算し、空き容量がそれ未満なら条件成立)
     -m MTIME       最終更新日時閾値 (GNU date -d で解釈可能な文字列)
                    例: "2025-11-01" や "2025-11-01 00:00:00"
+  ※ -b と -p は同時に指定できません
 
 任意:
   -r FILE_REGEX    ファイル名(basename)に対する POSIX 拡張正規表現。
@@ -48,10 +45,8 @@ Usage: {{SCRIPT_NAME}} -s SRC_DIR -d DEST_DIR [-t THRESHOLD|-m MTIME] [options]
   - INFO / DEBUG / ERROR はすべて stderr に出力されます。
 
 注意:
-  - -t が指定されている場合、SRC_DIR と DEST_DIR が同一パーティション上にあると
+  - -b/-p が指定されている場合、SRC_DIR と DEST_DIR が同一パーティション上にあると
     空き容量は増えないためエラーになります。
-  - 空き容量に関する判定は、「このスクリプト以外では空き容量が変化しない」
-    ことを前提に、ファイルサイズ合計から推定しています。
 EOF
 
 ########################################
@@ -91,30 +86,34 @@ get_total_bytes() { df --output=size  -B1 "$SRC_DIR" 2>/dev/null | awk 'NR==2{pr
 ########################################
 SRC_DIR=""
 DEST_DIR=""
-FILE_REGEX="^[^.].*"       # デフォルト: .で始まらないすべてのファイル名
-THRESHOLD_FREE_BYTES=""    # 空き容量閾値 (Bytes)
-THRESHOLD_PCT=""           # %指定 (20 など)
-TIME_THRESHOLD_EPOCH=""    # mtime 閾値 (epoch秒)
+FILE_REGEX="^[^.].*"     # デフォルト: .で始まらないすべてのファイル名
+
+MIN_FREE_BYTES=""        # -b: 空き容量閾値 (Bytes)
+MIN_FREE_PCT=""          # -p: 空き容量閾値 (%)
+TIME_THRESHOLD_EPOCH=""  # -m: mtime 閾値 (epoch秒)
 TIME_RAW=""
 
-while getopts ":s:d:t:m:r:vh" opt; do
+while getopts ":s:d:b:p:m:r:vh" opt; do
   case "$opt" in
     s) SRC_DIR="$OPTARG" ;;
     d) DEST_DIR="$OPTARG" ;;
-    t)
-      THRESHOLD_RAW="$OPTARG"
-      if printf '%s' "$THRESHOLD_RAW" | grep -q '%$'; then
-        PCT="${THRESHOLD_RAW%%%}"
-        if ! printf '%s\n' "$PCT" | grep -Eq '^[0-9]+$'; then
-          syntax_error "-t の割合指定が不正です: $THRESHOLD_RAW"
-        fi
-        THRESHOLD_PCT="$PCT"
-      else
-        if ! printf '%s\n' "$THRESHOLD_RAW" | grep -Eq '^[0-9]+$'; then
-          syntax_error "-t のバイト指定が不正です: $THRESHOLD_RAW"
-        fi
-        THRESHOLD_FREE_BYTES="$THRESHOLD_RAW"
+    b)
+      if [ -n "$MIN_FREE_PCT" ]; then
+        syntax_error "-b と -p は同時に指定できません"
       fi
+      if ! printf '%s\n' "$OPTARG" | grep -Eq '^[0-9]+$'; then
+        syntax_error "-b のバイト指定が不正です: $OPTARG"
+      fi
+      MIN_FREE_BYTES="$OPTARG"
+      ;;
+    p)
+      if [ -n "$MIN_FREE_BYTES" ]; then
+        syntax_error "-b と -p は同時に指定できません"
+      fi
+      if ! printf '%s\n' "$OPTARG" | grep -Eq '^[0-9]+$'; then
+        syntax_error "-p の割合指定が不正です: $OPTARG"
+      fi
+      MIN_FREE_PCT="$OPTARG"
       ;;
     m)
       TIME_RAW="$OPTARG"
@@ -154,8 +153,8 @@ if [ -z "$SRC_DIR" ] || [ -z "$DEST_DIR" ]; then
   syntax_error "-s SRC_DIR と -d DEST_DIR は必須です"
 fi
 
-if [ -z "$THRESHOLD_FREE_BYTES" ] && [ -z "$THRESHOLD_PCT" ] && [ -z "$TIME_THRESHOLD_EPOCH" ]; then
-  syntax_error "-t または -m の少なくとも一方を指定してください"
+if [ -z "$MIN_FREE_BYTES" ] && [ -z "$MIN_FREE_PCT" ] && [ -z "$TIME_THRESHOLD_EPOCH" ]; then
+  syntax_error "-b, -p, -m のいずれかを指定してください"
 fi
 
 ########################################
@@ -180,21 +179,21 @@ fi
 ########################################
 # %指定があれば Bytes に変換（DEBUG 出力）
 ########################################
-if [ -n "$THRESHOLD_PCT" ]; then
+if [ -n "$MIN_FREE_PCT" ]; then
   TOTAL_BYTES="$(get_total_bytes || true)"
   if ! printf '%s\n' "$TOTAL_BYTES" | grep -Eq '^[0-9]+$'; then
     log_error "ファイルシステム総サイズの取得に失敗しました (SRC_DIR: $SRC_DIR)"
     exit 1
   fi
-  THRESHOLD_FREE_BYTES=$(( TOTAL_BYTES * THRESHOLD_PCT / 100 ))
-  debug_log "空き容量閾値 ${THRESHOLD_PCT}% → ${THRESHOLD_FREE_BYTES} Bytes (総サイズ: ${TOTAL_BYTES} Bytes)"
+  MIN_FREE_BYTES=$(( TOTAL_BYTES * MIN_FREE_PCT / 100 ))
+  debug_log "空き容量閾値 ${MIN_FREE_PCT}% → ${MIN_FREE_BYTES} Bytes (総サイズ: ${TOTAL_BYTES} Bytes)"
 fi
 
 ########################################
-# -t 指定がある場合のみパーティションチェック & 初期空き容量計算
+# -b/-p 指定がある場合のみパーティションチェック & 初期空き容量計算
 ########################################
 NEED_BYTES=0
-if [ -n "$THRESHOLD_FREE_BYTES" ]; then
+if [ -n "$MIN_FREE_BYTES" ]; then
   SRC_FS=$(df -P "$SRC_DIR" 2>/dev/null | awk 'NR==2{print $1}')
   DEST_FS=$(df -P "$DEST_DIR" 2>/dev/null | awk 'NR==2{print $1}')
 
@@ -204,7 +203,7 @@ if [ -n "$THRESHOLD_FREE_BYTES" ]; then
   fi
 
   if [ "$SRC_FS" = "$DEST_FS" ]; then
-    log_error "-t が指定されていますが、SRC_DIR と DEST_DIR は同じパーティション上にあります (${SRC_FS})"
+    log_error "-b/-p が指定されていますが、SRC_DIR と DEST_DIR は同じパーティション上にあります (${SRC_FS})"
     log_error "空き容量を増やす目的であれば、異なるパーティションを指定してください"
     exit 1
   fi
@@ -215,8 +214,8 @@ if [ -n "$THRESHOLD_FREE_BYTES" ]; then
     exit 1
   fi
 
-  NEED_BYTES=$(( THRESHOLD_FREE_BYTES - FREE_INITIAL ))
-  debug_log "初期空き容量: ${FREE_INITIAL} Bytes, 閾値: ${THRESHOLD_FREE_BYTES} Bytes, 追加で必要な容量: ${NEED_BYTES} Bytes"
+  NEED_BYTES=$(( MIN_FREE_BYTES - FREE_INITIAL ))
+  debug_log "初期空き容量: ${FREE_INITIAL} Bytes, 閾値: ${MIN_FREE_BYTES} Bytes, 追加で必要な容量: ${NEED_BYTES} Bytes"
 
   if [ "$NEED_BYTES" -le 0 ]; then
     log_info "すでに空き容量が閾値以上のため、ファイル移動は行いません"
@@ -268,9 +267,9 @@ for entry in "${CANDIDATES[@]}"; do
     older=true
   fi
 
-  # 空き容量閾値チェック（-t 指定時のみ）
+  # 空き容量閾値チェック（-b/-p 指定時のみ）
   # NEED_BYTES > 0 の間は「まだ容量が足りない」→ space_low=true
-  if [ -n "$THRESHOLD_FREE_BYTES" ] && [ "$NEED_BYTES" -gt 0 ]; then
+  if [ -n "$MIN_FREE_BYTES" ] && [ "$NEED_BYTES" -gt 0 ]; then
     space_low=true
   fi
 
@@ -285,12 +284,12 @@ for entry in "${CANDIDATES[@]}"; do
   fi
 
   if mv -- "$file" "$DEST_DIR/"; then
-    if [ -n "$THRESHOLD_FREE_BYTES" ]; then
+    if [ -n "$MIN_FREE_BYTES" ]; then
       # このファイルサイズ分だけ空き容量が増えるとみなす
       NEED_BYTES=$(( NEED_BYTES - size ))
       # 推定現在空き容量（ブロックサイズ等による誤差は許容）
-      EST_FREE=$(( THRESHOLD_FREE_BYTES - NEED_BYTES ))
-      log_info "移動: $file (older=${older}, space_low=${space_low}, size=${size} Bytes, 推定空き容量=${EST_FREE} Bytes, 閾値=${THRESHOLD_FREE_BYTES} Bytes)"
+      EST_FREE=$(( MIN_FREE_BYTES - NEED_BYTES ))
+      log_info "移動: $file (older=${older}, space_low=${space_low}, size=${size} Bytes, 推定空き容量=${EST_FREE} Bytes, 閾値=${MIN_FREE_BYTES} Bytes)"
     else
       log_info "移動: $file (older=${older}, size=${size} Bytes)"
     fi
