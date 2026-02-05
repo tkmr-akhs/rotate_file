@@ -1,10 +1,11 @@
 function New-TestFile {
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
     param(
         [Parameter(Mandatory = $true, Position = 0)]
         [string]$Prefix,
 
         [Parameter(Mandatory = $true, Position = 1)]
+        [AllowEmptyString()]
         [string]$Suffix,
 
         [Parameter(Mandatory = $true, Position = 2)]
@@ -14,50 +15,38 @@ function New-TestFile {
         [int]$Finish,
 
         [Parameter(Mandatory = $true, Position = 4)]
+        [ValidateRange(0, [long]::MaxValue)]
         [long]$Size
     )
 
-    if ($PSBoundParameters.Count -ne 5) {
-        Write-Host "Usage: New-TestFile <prefix> <suffix> <start> <finish> <size>"
-        Write-Host "  <start>  : 起点（日数前）"
-        Write-Host "  <finish> : 終点（日数前）"
-        Write-Host "  <size>   : 各ファイルのサイズ（バイト）"
-        return
-    }
+    if ($Start -gt $Finish) { return }
 
-    if ($Size -lt 0) { throw "<size> must be >= 0" }
-
-    # bashの NOW_TIME=$(date +%H:%M:%S) 相当：関数実行時の時刻を固定
-    $nowTime = Get-Date
-    $h = $nowTime.Hour
-    $m = $nowTime.Minute
-    $s = $nowTime.Second
+    $baseTime = Get-Date
 
     foreach ($i in $Start..$Finish) {
-        # bash: date -d "$i day ago" +%Y%m%d
-        $targetDate = (Get-Date).AddDays(-$i)
-
-        $dateStr = $targetDate.ToString('yyyyMMdd')
+        $stamp = $baseTime.AddDays(-$i)
+        $dateStr = $stamp.ToString('yyyyMMdd')
         $file = "{0}-{1}{2}" -f $Prefix, $dateStr, $Suffix
 
-        # : > "$FILE" 相当（空で作る/上書き）
-        # サイズ 0 の場合でも作る
+        $action = "Create/overwrite file, set size=$Size bytes, set LastWriteTime=$($stamp.ToString('yyyy-MM-dd HH:mm:ss'))"
+        if (-not $PSCmdlet.ShouldProcess($file, $action)) {
+            continue
+        }
+
         $fs = $null
         try {
-            $fs = [System.IO.File]::Open($file, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
-
-            if ($Size -gt 0) {
-                # fallocate -l 相当：指定サイズまで0で拡張
-                $fs.SetLength($Size)
-            }
+            $fs = [System.IO.File]::Open(
+                $file,
+                [System.IO.FileMode]::Create,
+                [System.IO.FileAccess]::Write,
+                [System.IO.FileShare]::None
+            )
+            $fs.SetLength($Size)
         }
         finally {
             if ($fs) { $fs.Dispose() }
         }
 
-        # touch -m -d "$DATE $NOW_TIME" 相当（更新時刻のみ）
-        $stamp = Get-Date -Year $targetDate.Year -Month $targetDate.Month -Day $targetDate.Day `
-                          -Hour $h -Minute $m -Second $s
-        (Get-Item -LiteralPath $file).LastWriteTime = $stamp
+        [System.IO.File]::SetLastWriteTime($file, $stamp)
     }
 }
