@@ -25,7 +25,7 @@ function New-TestFile {
 
     foreach ($i in $Start..$Finish) {
         $stamp = $baseTime.AddDays(-$i)
-        $dateStr = $stamp.ToString('yyyyMMdd')
+        $dateStr = $stamp.ToString('yyyy-MM-dd-HH-mm-ss-fff')
         $file = "{0}-{1}{2}" -f $Prefix, $dateStr, $Suffix
 
         $action = "Create/overwrite file, set size=$Size bytes, set LastWriteTime=$($stamp.ToString('yyyy-MM-dd HH:mm:ss'))"
