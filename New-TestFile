@@ -47,6 +47,6 @@ function New-TestFile {
             if ($fs) { $fs.Dispose() }
         }
 
-        [System.IO.File]::SetLastWriteTime($file, $stamp)
+        (Get-Item -LiteralPath $file).LastWriteTime = $stamp
     }
 }
